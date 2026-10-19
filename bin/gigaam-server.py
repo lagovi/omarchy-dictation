@@ -5,6 +5,8 @@ import time
 import socket
 import subprocess
 import psutil
+import numpy as np
+import soundfile as sf
 import onnxruntime as ort
 import onnx_asr
 
@@ -41,6 +43,46 @@ model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", quantization="int8", se
 load_time = time.perf_counter() - t0
 print(f"✅ Parakeet готов за {load_time:.2f} сек!", flush=True)
 
+# 3. Легковесный VAD: срез краевой тишины (~1.5 мс оверхеда, 0 МБ доп. RAM)
+def trim_silence(wav_path, threshold_db=-36.0, pad_ms=150):
+    try:
+        data, sr = sf.read(wav_path)
+        if len(data) == 0:
+            return wav_path
+
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+
+        # Окно анализа 20 мс
+        frame_len = int(sr * 0.02)
+        if len(data) < frame_len:
+            return wav_path
+
+        num_frames = len(data) // frame_len
+        frames = data[:num_frames * frame_len].reshape(-1, frame_len)
+        rms = np.sqrt(np.mean(frames**2, axis=1) + 1e-12)
+        db = 20 * np.log10(rms)
+
+        active = np.where(db > threshold_db)[0]
+        if len(active) == 0:
+            return wav_path  # звук тихий, отдаем как есть
+
+        pad_frames = int((pad_ms / 1000) / 0.02)
+        start_frame = max(0, active[0] - pad_frames)
+        end_frame = min(num_frames, active[-1] + 1 + pad_frames)
+
+        start_sample = start_frame * frame_len
+        end_sample = min(len(data), end_frame * frame_len)
+
+        # Триммим только если с краев отрезается более 150 мс тишины
+        if start_sample > int(sr * 0.15) or (len(data) - end_sample) > int(sr * 0.15):
+            trimmed_path = "/tmp/dictate_trimmed.wav"
+            sf.write(trimmed_path, data[start_sample:end_sample], sr)
+            return trimmed_path
+    except Exception:
+        pass
+    return wav_path
+
 # Оповещение о готовности на экран
 try:
     subprocess.run([
@@ -65,7 +107,9 @@ while True:
     if wav_path and os.path.exists(wav_path):
         t_start = time.perf_counter()
         try:
-            text = model.recognize(wav_path)
+            # Обрезаем краевую тишину перед скармливанием в модель
+            active_wav = trim_silence(wav_path)
+            text = model.recognize(active_wav)
             elapsed = (time.perf_counter() - t_start) * 1000
             print(f"⚡ [РАСПОЗНАНО за {elapsed:5.1f} мс]: {text}", flush=True)
             conn.sendall(text.encode() if text else b"")

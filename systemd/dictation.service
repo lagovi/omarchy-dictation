@@ -1,12 +1,21 @@
 [Unit]
 Description=NVIDIA Parakeet Speech-to-Text Background Engine
-After=pipewire.service
+After=default.target
 
 [Service]
 Type=simple
 ExecStart=/home/uzzzver/.local/share/gigaam-env/bin/python /home/uzzzver/.local/bin/gigaam-server.py
 Restart=always
 RestartSec=2
+
+# Приоритет планировщика для быстрого чтения страниц
+Nice=-5
+
+# Защита от OOM-killer: ядро не убьет процесс при нехватке памяти
+OOMScoreAdjust=-500
+
+# Мягкая защита: удерживать до 800M в физической памяти, пока нет критического дефицита
+MemoryLow=800M
 
 [Install]
 WantedBy=default.target
