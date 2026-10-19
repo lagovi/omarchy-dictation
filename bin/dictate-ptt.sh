@@ -11,7 +11,6 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S.%3N')] $1" >> "$LOG_FILE"
 }
 
-# Определение реального состояния ASR-движка
 get_engine_state() {
     if [ -S "$SOCK" ]; then
         echo "READY"
@@ -22,13 +21,11 @@ get_engine_state() {
     fi
 }
 
-# Фоновое ожидание окончания загрузки и расшифровка отложенной речи
 auto_recover_pending() {
     (
-        # Ждем готовности модели до 60 секунд (с учетом медленного диска)
         for i in {1..120}; do
             if [ -S "$SOCK" ]; then
-                log "STATE: Model finished loading. Socket ready!"
+                log "STATE: Model ready. Processing pending audio..."
                 if [ -s "$PENDING_WAV" ]; then
                     notify-send -t 2500 -u low "⚡ Расшифровка" "Модель готова! Обрабатываю наговорённую речь..." -h string:x-canonical-private-synchronous:dictate
                     TEXT=$(echo "$PENDING_WAV" | nc -U -N -w 180 "$SOCK")
@@ -48,11 +45,10 @@ auto_recover_pending() {
     ) &
 }
 
-# Переключение состояния (обработчик тройного клика)
 handle_triple_click() {
     local state
     state=$(get_engine_state)
-    log "ACTION: Triple-click confirmed. Current state: $state"
+    log "ACTION: Triple-click triggered! Current state: $state"
 
     case "$state" in
         READY)
@@ -81,7 +77,6 @@ case "$1" in
 
         STATE=$(get_engine_state)
 
-        # При начале записи не спамим уведомлениями, если это может быть короткий клик
         case "$STATE" in
             READY)
                 rm -f "$WAV_FILE"
@@ -96,7 +91,7 @@ case "$1" in
                 notify-send -t 2500 -u low "⏳ Запись идёт (ASR загружается)" "Речь сохранится и распознается автоматически" -h string:x-canonical-private-synchronous:dictate
                 ;;
             STOPPED)
-                # Ничего не пишем в микрофон, ждем события отпускания (stop)
+                # При выключенном сервисе микрофон не трогаем
                 ;;
         esac
         ;;
@@ -104,17 +99,22 @@ case "$1" in
     stop)
         STOP_TIME=$(date +%s%3N)
 
-        START_TIME=$(cat "$TIME_FILE" 2>/dev/null || echo "$STOP_TIME")
+        # Безопасное чтение времени (защита от пустого файла и 56-летних багов)
+        START_TIME=$(cat "$TIME_FILE" 2>/dev/null || echo "")
         rm -f "$TIME_FILE"
 
-        DURATION_MS=$((STOP_TIME - START_TIME))
+        if [[ ! "$START_TIME" =~ ^[0-9]+$ ]]; then
+            DURATION_MS=0
+        else
+            DURATION_MS=$((STOP_TIME - START_TIME))
+        fi
         log "Stop called. Duration: ${DURATION_MS} ms"
 
         # -------------------------------------------------------------
-        # 1. ОБРАБОТКА КОРОТКИХ КЛИКОВ (< 350 мс) — ДЕТЕКТОР ТРОЙНОГО SHIFT
+        # 1. КОРОТКИЙ КЛИК (< 500 МС): ДЕТЕКТОР ТРОЙНОГО НАЖАТИЯ
         # -------------------------------------------------------------
-        if [ "$DURATION_MS" -lt 350 ]; then
-            # Убиваем возможный фоновый pw-record
+        if [ "$DURATION_MS" -lt 500 ]; then
+            # Гасим микро-запись, если успела запуститься
             if [ -f "$PID_FILE" ]; then
                 PID=$(cat "$PID_FILE" 2>/dev/null)
                 rm -f "$PID_FILE"
@@ -122,9 +122,9 @@ case "$1" in
                 rm -f "$WAV_FILE"
             fi
 
-            # Добавляем клик в историю (окно 1000 мс)
+            # Добавляем клик в историю (окно 1200 мс)
             echo "$STOP_TIME" >> "$CLICKS_FILE"
-            awk -v cutoff=$((STOP_TIME - 1000)) '$1 > cutoff' "$CLICKS_FILE" > "${CLICKS_FILE}.tmp" 2>/dev/null && mv "${CLICKS_FILE}.tmp" "$CLICKS_FILE"
+            awk -v cutoff=$((STOP_TIME - 1200)) '$1 > cutoff' "$CLICKS_FILE" > "${CLICKS_FILE}.tmp" 2>/dev/null && mv "${CLICKS_FILE}.tmp" "$CLICKS_FILE"
             CLICK_COUNT=$(wc -l < "$CLICKS_FILE" 2>/dev/null || echo 0)
 
             if [ "$CLICK_COUNT" -ge 3 ]; then
@@ -135,14 +135,10 @@ case "$1" in
         fi
 
         # -------------------------------------------------------------
-        # 2. ОБРАБОТКА ДЛИННОГО УДЕРЖАНИЯ (ДИКТОВКА)
+        # 2. ДЛИННОЕ УДЕРЖАНИЕ (>= 500 МС): ДИКТОВКА РЕЧИ
         # -------------------------------------------------------------
-        # Сбрасываем счетчик кликов (долгое удержание — это не тройной клик)
-        rm -f "$CLICKS_FILE"
-
         STATE=$(get_engine_state)
 
-        # Если сервис выключен, а клавишу держали долго — мягко напоминаем
         if [ "$STATE" = "STOPPED" ]; then
             notify-send -t 2500 -u low "⏸️ ASR выключен" "Для загрузки в память нажмите Shift 3 раза быстро" -h string:x-canonical-private-synchronous:dictate
             exit 0
@@ -155,7 +151,6 @@ case "$1" in
         rm -f "$PID_FILE"
         [ -z "$PID" ] && exit 0
 
-        # Останавливаем pw-record
         kill -INT "$PID" 2>/dev/null
         for i in {1..25}; do
             kill -0 "$PID" 2>/dev/null || break
@@ -167,18 +162,15 @@ case "$1" in
             exit 0
         fi
 
-        # Сохраняем наговорённое в резервный файл
         cp "$WAV_FILE" "$PENDING_WAV"
 
-        # Если модель ещё на этапе загрузки — страхуем и ждем
         if [ "$STATE" = "LOADING" ]; then
-            log "Audio saved to pending while model is still loading"
+            log "Audio saved to pending while model is loading"
             notify-send -t 3000 -u low "💾 Речь сохранена" "Ожидание завершения загрузки модели..." -h string:x-canonical-private-synchronous:dictate
             auto_recover_pending
             exit 0
         fi
 
-        # Если модель готова — немедленный инференс
         notify-send -t 2000 -u low "⚡ Распознавание..." "Обработка речи..." -h string:x-canonical-private-synchronous:dictate
 
         log "Sending WAV to server..."
