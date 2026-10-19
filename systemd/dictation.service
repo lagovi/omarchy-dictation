@@ -1,0 +1,12 @@
+[Unit]
+Description=NVIDIA Parakeet Speech-to-Text Background Engine
+After=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=/home/uzzzver/.local/share/gigaam-env/bin/python /home/uzzzver/.local/bin/gigaam-server.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
