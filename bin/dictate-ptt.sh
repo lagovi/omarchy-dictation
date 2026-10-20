@@ -1,8 +1,8 @@
 #!/bin/bash
 PID_FILE="/tmp/dictate_ptt.pid"
 TIME_FILE="/tmp/dictate_ptt.time"
-WAV_FILE="/tmp/dictate.wav"
-PENDING_WAV="/tmp/dictate_pending.wav"
+WAV_FILE="${XDG_RUNTIME_DIR:-/run/user/$UID}/dictate.wav"
+PENDING_WAV="${XDG_RUNTIME_DIR:-/run/user/$UID}/dictate_pending.wav"
 SOCK="/tmp/gigaam.sock"
 LOG_FILE="/tmp/dictate_ptt.log"
 CLICKS_FILE="/tmp/dictate_clicks.txt"
