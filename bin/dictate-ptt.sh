@@ -53,7 +53,7 @@ handle_triple_click() {
     case "$state" in
         READY)
             log "Action: STOPPING engine"
-            systemctl --user stop dictation
+            systemctl --user stop --no-block dictation
             rm -f "$SOCK"
             notify-send -t 2500 -u normal "💤 ASR выгружен из RAM" "Освобождено ~1.4 ГБ оперативной памяти" -h string:x-canonical-private-synchronous:dictate
             ;;
