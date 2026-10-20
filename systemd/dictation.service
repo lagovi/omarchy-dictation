@@ -8,15 +8,15 @@ ExecStart=/home/uzzzver/.local/share/gigaam-env/bin/python /home/uzzzver/.local/
 Restart=always
 RestartSec=2
 
-# Приоритет планировщика ядра Linux
+# Приоритет планировщика
 Nice=-10
 
-# Cgroups v2: максимальный вес CPU и I/O (1000 против стандартных 100)
+# Cgroups v2: максимальный вес CPU и I/O (1000 против дефолтных 100)
 CPUWeight=1000
 StartupCPUWeight=1000
 IOWeight=1000
 
-# Быстрая выгрузка: если процесс завис, не ждать дольше 3 секунд
+# Быстрая выгрузка: таймаут не более 3 секунд
 TimeoutStopSec=3s
 
 # Защита от OOM-killer и свопинга
