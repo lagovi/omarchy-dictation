@@ -1,11 +1,12 @@
 #!/bin/bash
-PID_FILE="/tmp/dictate_ptt.pid"
-TIME_FILE="/tmp/dictate_ptt.time"
-WAV_FILE="${XDG_RUNTIME_DIR:-/run/user/$UID}/dictate.wav"
-PENDING_WAV="${XDG_RUNTIME_DIR:-/run/user/$UID}/dictate_pending.wav"
+RUNTIME_BASE="${XDG_RUNTIME_DIR:-/run/user/$UID}"
+PID_FILE="$RUNTIME_BASE/dictate_ptt.pid"
+TIME_FILE="$RUNTIME_BASE/dictate_ptt.time"
+WAV_FILE="$RUNTIME_BASE/dictate.wav"
+PENDING_WAV="$RUNTIME_BASE/dictate_pending.wav"
+CLICKS_FILE="$RUNTIME_BASE/dictate_clicks.txt"
 SOCK="/tmp/gigaam.sock"
 LOG_FILE="/tmp/dictate_ptt.log"
-CLICKS_FILE="/tmp/dictate_clicks.txt"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S.%3N')] $1" >> "$LOG_FILE"
@@ -48,7 +49,7 @@ auto_recover_pending() {
 handle_triple_click() {
     local state
     state=$(get_engine_state)
-    log "ACTION: Triple-click triggered! Current state: $state"
+    log "ACTION: Triple-click confirmed! State: $state"
 
     case "$state" in
         READY)
@@ -58,7 +59,7 @@ handle_triple_click() {
             notify-send -t 2500 -u normal "💤 ASR выгружен из RAM" "Освобождено ~1.4 ГБ оперативной памяти" -h string:x-canonical-private-synchronous:dictate
             ;;
         LOADING)
-            log "Action: Already loading, ignoring stop request"
+            log "Action: Already loading, ignoring"
             notify-send -t 3000 -u normal "⏳ Модель уже загружается!" "Идёт считывание весов с накопителя в RAM, подождите завершения..." -h string:x-canonical-private-synchronous:dictate
             ;;
         STOPPED)
@@ -75,8 +76,26 @@ case "$1" in
         NOW=$(date +%s%3N)
         echo "$NOW" > "$TIME_FILE"
 
-        STATE=$(get_engine_state)
+        # 1. ДЕТЕКЦИЯ ТРОЙНОГО НАЖАТИЯ ПО НАЖАТИЮ КЛАВИШИ (ОКНО 1200 МС)
+        echo "$NOW" >> "$CLICKS_FILE"
+        awk -v cutoff=$((NOW - 1200)) '$1 > cutoff' "$CLICKS_FILE" > "${CLICKS_FILE}.tmp" 2>/dev/null && mv "${CLICKS_FILE}.tmp" "$CLICKS_FILE"
+        CLICK_COUNT=$(wc -l < "$CLICKS_FILE" 2>/dev/null || echo 0)
 
+        # Если это 3-й клик — мгновенно переключаем сервис
+        if [ "$CLICK_COUNT" -ge 3 ]; then
+            rm -f "$CLICKS_FILE"
+            if [ -f "$PID_FILE" ]; then
+                PID=$(cat "$PID_FILE" 2>/dev/null)
+                rm -f "$PID_FILE"
+                [ -n "$PID" ] && kill -INT "$PID" 2>/dev/null
+                rm -f "$WAV_FILE"
+            fi
+            handle_triple_click
+            exit 0
+        fi
+
+        # 2. ОБЫЧНОЕ НАЖАТИЕ (ЕСЛИ НЕ ТРОЙНОЙ КЛИК)
+        STATE=$(get_engine_state)
         case "$STATE" in
             READY)
                 rm -f "$WAV_FILE"
@@ -91,7 +110,7 @@ case "$1" in
                 notify-send -t 2500 -u low "⏳ Запись идёт (ASR загружается)" "Речь сохранится и распознается автоматически" -h string:x-canonical-private-synchronous:dictate
                 ;;
             STOPPED)
-                # При выключенном сервисе микрофон не трогаем
+                # При кликах 1 и 2 тихо молчим, чтобы не спамить экран
                 ;;
         esac
         ;;
@@ -99,7 +118,6 @@ case "$1" in
     stop)
         STOP_TIME=$(date +%s%3N)
 
-        # Безопасное чтение времени (защита от пустого файла и 56-летних багов)
         START_TIME=$(cat "$TIME_FILE" 2>/dev/null || echo "")
         rm -f "$TIME_FILE"
 
@@ -110,35 +128,23 @@ case "$1" in
         fi
         log "Stop called. Duration: ${DURATION_MS} ms"
 
-        # -------------------------------------------------------------
-        # 1. КОРОТКИЙ КЛИК (< 500 МС): ДЕТЕКТОР ТРОЙНОГО НАЖАТИЯ
-        # -------------------------------------------------------------
-        if [ "$DURATION_MS" -lt 500 ]; then
-            # Гасим микро-запись, если успела запуститься
+        # Короткий клик (< 450 мс) — это часть последовательности кликов или случайный нажим
+        if [ "$DURATION_MS" -lt 450 ]; then
             if [ -f "$PID_FILE" ]; then
                 PID=$(cat "$PID_FILE" 2>/dev/null)
                 rm -f "$PID_FILE"
                 [ -n "$PID" ] && kill -INT "$PID" 2>/dev/null
                 rm -f "$WAV_FILE"
             fi
-
-            # Добавляем клик в историю (окно 1200 мс)
-            echo "$STOP_TIME" >> "$CLICKS_FILE"
-            awk -v cutoff=$((STOP_TIME - 1200)) '$1 > cutoff' "$CLICKS_FILE" > "${CLICKS_FILE}.tmp" 2>/dev/null && mv "${CLICKS_FILE}.tmp" "$CLICKS_FILE"
-            CLICK_COUNT=$(wc -l < "$CLICKS_FILE" 2>/dev/null || echo 0)
-
-            if [ "$CLICK_COUNT" -ge 3 ]; then
-                rm -f "$CLICKS_FILE"
-                handle_triple_click
-            fi
             exit 0
         fi
 
-        # -------------------------------------------------------------
-        # 2. ДЛИННОЕ УДЕРЖАНИЕ (>= 500 МС): ДИКТОВКА РЕЧИ
-        # -------------------------------------------------------------
+        # Если клавишу держали долго (>= 450 мс) — сбрасываем историю кликов (это диктовка)
+        rm -f "$CLICKS_FILE"
+
         STATE=$(get_engine_state)
 
+        # Если сервис выключен, а клавишу зажали долго — напоминаем
         if [ "$STATE" = "STOPPED" ]; then
             notify-send -t 2500 -u low "⏸️ ASR выключен" "Для загрузки в память нажмите Shift 3 раза быстро" -h string:x-canonical-private-synchronous:dictate
             exit 0
